@@ -1,125 +1,117 @@
-#include "input.h"
-#include "node.h"
-#include "layer.h"
-#include "network.h"
-
-#include <iostream>
 #include <fstream>
-#include <cstdlib>
 
-double Network::trainingConstant = 1.0;
+#include "network.h"
+#include "functions.h"
 
-Network::Network(int _size, int* _layerSize)
+double Network::alpha = 0.1;
+
+Network::Network(int amount_of_layers, int* nodes_per_layer)
 {
-    // Normal constructor
-    init(_size, _layerSize);
-}
-
-Network::Network(char path[])
-{
-    // Open file
-    std::ifstream in(path);
+    // Store amount of layers
+    this->amount_of_layers = amount_of_layers;
     
-    // Read the size of the network / the amount of layers
-    in.read((char*) &size, sizeof(int));
+    // Create an array of layers
+    layers = new Layer*[amount_of_layers];
     
-    // Read the sizes of each layer / the amount of nodes per layer
-    int* layerSize = (int*) malloc(size * sizeof(int));
-    in.read((char*) layerSize, size * sizeof(int));
-    
-    // Now that the size of the network and the sizes of the layers are known, create / initialize the network
-    init(size, layerSize);
-    
-    // Free the allocated space
-    free(layerSize);
-    
-    // For each layer, read the weights
-    for(int i = 1;i < size;i ++)
+    for(int l = 0;l < amount_of_layers;l ++)
     {
-        int n = layers[i]->size * (layers[i - 1]->size + 1) * sizeof(T_WEIGHT);
-        in.read((char*) (layers[i]->weights), n);
-    }
-
-    // Close the stream
-    in.close();
-}
-
-void Network::init(int _size, int* _layerSize)
-{
-    // Seed the random generator
-    srand(time(NULL));
-    
-    // Create an array of Layer's of same length as nodes_per_layer
-    size = _size;
-    layers = (Layer**) malloc(size * sizeof(Layer*));
-    
-    // First create the input layer
-    layers[0] = (Layer*) malloc(sizeof(Layer));
-    new(layers[0]) Layer(LAYER_TYPE_INPUT, _layerSize[0]);
-    
-    for(int i = 1;i < _size;i ++)
-    {
-        // Create the hidden and output layer(s) and connect each with its previous layer
-        layers[i] = (Layer*) malloc(sizeof(Layer));
+        Layer* layer = layers[l] = new Layer();
         
-        // All hidden types, except for the last one
-        int type = i < _size - 1 ? LAYER_TYPE_HIDDEN : LAYER_TYPE_OUTPUT;
+        // Set amount of nodes
+        layer->amount_of_nodes = nodes_per_layer[l];
         
-        new(layers[i]) Layer(type, _layerSize[i]);
-        layers[i]->setPreviousLayer(layers[i-1]);
+        // Create an array of values and one of deltas
+        layer->values = new double[nodes_per_layer[l]];
+        layer->deltas = new double[nodes_per_layer[l]];
+        
+        if(l == 0)
+        {
+            // The input layer does not have a previous layer and does not have weights
+            layer->previous_layer = NULL;
+            layer->weights = NULL;
+        }
+        else
+        {
+            // Set pointer to the previous layer
+            layer->previous_layer = layers[l-1];
+            
+            // Create a "matrix" of weights
+            int weights_size = nodes_per_layer[l] * (nodes_per_layer[l - 1] + 1); // Note: we include the bias
+            layer->weights = new double[weights_size];
+
+            // Initialize weights using Gaussian distribution
+            for(int x = 0;x < weights_size;x ++)
+                layer->weights[x] = random_weight(layer);
+        }
     }
 }
 
-T_NODE_VALUE* Network::input(T_NODE_VALUE* _input)
+double* Network::feed(double* input_values)
 {
-    // Set the input values of the inputs in the first layer
-    layers[0]->input(_input);
+    // Copy the input values to the first layer
+    for(int i = 0;i < layers[0]->amount_of_nodes;i ++)
+        layers[0]->values[i] = input_values[i];
     
-    // Return an array of the outputs of the last layer
-    return layers[size - 1]->output();
+    // Do a chain of feeding forward
+    for(int l = 1;l < amount_of_layers;l ++)
+        layers[l]->evaluate();
+    
+    // Return the output of the last layer
+    return layers[amount_of_layers - 1]->values;
 }
 
-T_NODE_VALUE* Network::input(Input* _input)
+void Network::train(double* input_values, double* desired_values)
 {
-    // Use the Input _input as input for the earlier defined function
-    return input(_input->input);
-}
-
-void Network::train(T_NODE_VALUE* _input, T_NODE_VALUE* _output)
-{
-    // Input the input and evaluate everything
-    input(_input);
-
-    // Calculate the error for each node in the output layer
-    Layer* outputLayer = layers[size - 1];
+    // First feed the input values
+    feed(input_values);
     
-    for(int i = 0;i < outputLayer->size;i ++)
+    // Compute the deltas of the output layer
+    Layer* output_layer = layers[amount_of_layers - 1];
+    for(int i = 0;i < output_layer->amount_of_nodes;i ++)
     {
-        Node* node = outputLayer->nodes[i];
-        node->error = node->output * (1 - node->output) * (_output[i] - node->output);
+        double o = output_layer->values[i];
+        output_layer->deltas[i] = (o - desired_values[i]) * o * (1.0 - o);
     }
     
-    // Start Back Propagation chain
-    outputLayer->backPropagate();
+    // Do a backwards chain of backpropagation
+    for(int l = amount_of_layers - 1;l >= 1;l --)
+    {
+        layers[l]->backpropagate();
+    }
 }
 
-int Network::save(char path[])
+Network::~Network()
 {
+    // Delete all layers
+    for(int l = 0;l < amount_of_layers;l ++)
+    {
+        delete layers[l];
+    }
+    
+    // Deallocate used memory
+    delete layers;
+}
+
+// Save & Load functions
+int Network::save(const char path[])
+{
+    // Create output
     std::ofstream out(path);
     
     // If something went wrong
     if(out < 0) return 0;
     
     // Write the size of the network / amount of layers
-    out.write((char*) &size, sizeof(int));
+    out.write((char*) &amount_of_layers, sizeof(int));
     
     // Write the size of each layer
-    for(int i = 0;i < size;i ++) out.write((char*) &(layers[i]->size), sizeof(int));
-
+    for(int i = 0;i < amount_of_layers;i ++)
+        out.write((char*) &(layers[i]->amount_of_nodes), sizeof(int));
+    
     // Write each array of weights to the file
-    for(int i = 1;i < size;i ++)
+    for(int i = 1;i < amount_of_layers;i ++)
     {
-        int n = layers[i]->size * (layers[i - 1]->size + 1) * sizeof(T_WEIGHT);
+        int n = layers[i]->amount_of_nodes * (layers[i - 1]->amount_of_nodes + 1) * sizeof(double);
         out.write((char*) (layers[i]->weights), n);
     }
     
@@ -128,16 +120,52 @@ int Network::save(char path[])
     return 1;
 }
 
-Network::~Network()
+Network::Network(const char path[])
 {
-    // Destruct all the layers
-    for(int i = 0;i < size;i ++)
+    // Open file for reading
+    std::ifstream in(path);
+    
+    // Read the size of the network / the amount of layers
+    in.read((char*) &amount_of_layers, sizeof(int));
+    
+    // Read the sizes of each layer / the amount of nodes per layer
+    int nodes_per_layer[amount_of_layers];
+    in.read((char*) nodes_per_layer, amount_of_layers * sizeof(int));
+    
+    // Create an array of layers
+    layers = new Layer*[amount_of_layers];
+    
+    for(int l = 0;l < amount_of_layers;l ++)
     {
-        layers[i]->~Layer();
-        free(layers[i]);
+        Layer* layer = layers[l] = new Layer();
+        
+        // Set amount of nodes
+        layer->amount_of_nodes = nodes_per_layer[l];
+        
+        // Create an array of values and one of deltas
+        layer->values = new double[nodes_per_layer[l]];
+        layer->deltas = new double[nodes_per_layer[l]];
+        
+        if(l == 0)
+        {
+            // The input layer does not have a previous layer and does not have weights
+            layer->previous_layer = NULL;
+            layer->weights = NULL;
+        }
+        else
+        {
+            // Set pointer to the previous layer
+            layer->previous_layer = layers[l-1];
+            
+            // Create a "matrix" of weights
+            int weights_size = nodes_per_layer[l] * (nodes_per_layer[l - 1] + 1); // Note: we include the bias
+            layer->weights = new double[weights_size];
+            
+            // Read the value of the weights from the file
+            in.read((char*) (layers[l]->weights), layers[l]->amount_of_nodes * (layers[l - 1]->amount_of_nodes + 1) * sizeof(double));
+        }
     }
-
-    // Free the malloc'ed space
-    free(layers);
+    
+    // Close the stream
+    in.close();
 }
-

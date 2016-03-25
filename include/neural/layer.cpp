@@ -1,169 +1,59 @@
-#include "input.h"
-#include "node.h"
 #include "layer.h"
 #include "network.h"
-
-#include <cstdlib>
-#include <iostream>
-
-Layer::Layer(int _type, int _size)
-{
-    // Store this data
-    type = _type;
-    size = _size;
-    
-    // Create an array of new nodes
-    nodes = (Node**) malloc(size * sizeof(Node*));
-    for(int i = 0;i < size;i ++)
-    {
-        nodes[i] = (Node*) malloc(sizeof(Node));
-        new(nodes[i]) Node();
-    }
-}
-
-T_WEIGHT Layer::getWeight(int _from, int _to)
-{
-    return weights[_from * size + _to];
-}
-
-void Layer::setWeight(int _from, int _to, T_WEIGHT _value)
-{
-    weights[_from * size + _to] = _value;
-}
-
-void Layer::setPreviousLayer(Layer* _previousLayer)
-{
-    // Connect the layers
-    previousLayer = _previousLayer;
-    previousLayer->nextLayer = this;
-    
-    // Create an array of weights
-    weights = (T_WEIGHT*) malloc(size * (previousLayer->size + 1) * sizeof(T_WEIGHT));
-    
-    // Fill the array with random weights from -1 to 1
-    for(int i = 0;i < previousLayer->size;i ++)
-    {
-        for(int j = 0;j < size;j ++)
-        {
-//            setWeight(i, j, (T_WEIGHT) rand() * 2 / RAND_MAX - 1.0);
-            setWeight(i, j, 0);
-        }
-    }
-}
-
-void Layer::input(T_NODE_VALUE* _input)
-{
-    if(type != LAYER_TYPE_INPUT)
-    {
-        // TODO possibly return an error (?)
-        return;
-    }
-    
-    // Set the input node values with the inputs
-    for(int i = 0;i < size;i ++)
-    {
-        nodes[i]->output = _input[i];
-    }
-    
-    // Each of the nodes from this layers has their output set. Now the next layer can be evaluated
-    nextLayer->evaluate();
-}
+#include "functions.h"
 
 void Layer::evaluate()
 {
-    // Evaluate for each node in the layer
-    for(int i = 0;i < size;i ++)
+    // Update each value
+    for(int j = 0;j < amount_of_nodes;j ++)
     {
-        // Get the sum of input * weight for each of the nodes from the previous layer
-        double sum = getWeight(previousLayer->size, i); // Start with the bias, which equals 1 * weight[BIAS]
-        
-        for(int j = 0;j < previousLayer->size;j ++)
+        // Compute the weighted sum
+        int previous_layer_amount_of_nodes = previous_layer->amount_of_nodes;
+        double net = weights[(j + 1) * (previous_layer_amount_of_nodes + 1) - 1]; // Start with the bias = 1 * weights["bias"]
+        for(int i = 0;i < previous_layer_amount_of_nodes;i ++)
         {
-            sum += previousLayer->nodes[j]->output * getWeight(j, i);
+            net += weights[j * (previous_layer_amount_of_nodes + 1) + i] * previous_layer->values[i];
         }
-    
-        // Let the sum go through the activation function
-        nodes[i]->output = Node::activate(sum);
+        
+        // Apply the sigmoid function
+        values[j] = sigmoid(net);
     }
-    
-    // Stop the chain of this is the last layer of the network
-    if(type == LAYER_TYPE_OUTPUT) return;
-    
-    // Each of the nodes from this layers has their output set. Now the next layer can be evaluated.
-    nextLayer->evaluate();
 }
 
-T_NODE_VALUE* Layer::output()
+void Layer::backpropagate()
 {
-    if(type != LAYER_TYPE_OUTPUT)
+    int previous_layer_amount_of_nodes = previous_layer->amount_of_nodes;
+    for(int i = 0;i < previous_layer_amount_of_nodes;i ++)
     {
-        // TODO log something, or give/throw an error?
-        return NULL;
-    }
-    
-    // Create an array for the outputs
-    T_NODE_VALUE* output = (T_NODE_VALUE*) malloc(size * sizeof(T_NODE_VALUE));
-    
-    // Get each individual output
-    for(int i = 0;i < size;i ++)
-    {
-        output[i] = nodes[i]->output;
-    }
-    
-    return output;
-}
-
-void Layer::backPropagate()
-{
-    if(type == LAYER_TYPE_INPUT)
-    {
-        // Stop the chain
-        return;
-    }
-    
-    // First calculate errors in the previous layer, since we need the old weights (!)
-    for(int i = 0;i < previousLayer->size;i ++)
-    {
-        // Calculate the weighted sum of errors
-        double errorSum = 0;
-        for(int j = 0;j < size;j ++)
+        // Compute the deltas of the previous layer
+        double delta_net = 0.0;
+        for(int j = 0;j < amount_of_nodes;j ++)
         {
-            errorSum += nodes[j]->error * getWeight(i, j);
+            delta_net += weights[j * (previous_layer_amount_of_nodes + 1) + i] * deltas[j];
         }
         
-        // Set the error
-        Node* node = previousLayer->nodes[i];
-        node->error = node->output * (1 - node->output) * errorSum;
-    }
-    
-    // For each node in this layer
-    for(int j = 0;j < size;j ++)
-    {
-        // Update the weight to that node from every one in the previous layer
-        for(int i = 0;i < previousLayer->size;i ++)
-        {
-            // Update according to: W_{ij}^{+} = W_{ij} + c * error_{j} * output_{i}
-            setWeight(i, j, getWeight(i, j) + Network::trainingConstant * nodes[j]->error * previousLayer->nodes[i]->output);
-        }
+        double o = previous_layer->values[i];
+        previous_layer->deltas[i] = delta_net * o * (1.0 - o);
         
-        // Update the weight of the bias
-        setWeight(previousLayer->size, j, getWeight(previousLayer->size, j) + Network::trainingConstant * nodes[j]->error);
+        // Update weights (note that we do not need the deltas of the previous layer, but it may be handy to have computed the deltas of the previous layer before we change the values of the weights)
+        for(int j = 0;j < amount_of_nodes; j++)
+        {
+            weights[j * (previous_layer_amount_of_nodes + 1) + i] -= Network::alpha * deltas[j] * o;
+        }
     }
     
-    // Continue the backpropagation
-    previousLayer->backPropagate();
+    // Lastly, update the weights corresponding to the bias
+    for(int j = 0;j < amount_of_nodes;j ++)
+    {
+        weights[(j + 1) * (previous_layer_amount_of_nodes + 1) - 1] -= Network::alpha * deltas[j];
+    }
 }
 
 Layer::~Layer()
 {
-    // Destruct all the nodes
-    for(int i = 0;i < size;i ++)
-    {
-        nodes[i]->~Node();
-        free(nodes[i]);
-    }
+    // Deallocate used memory
+    if(weights != NULL) delete weights;
     
-    // Free all the malloc'ed space
-    free(nodes);
-    if(type != LAYER_TYPE_INPUT) free(weights);
+    delete values;
+    delete deltas;
 }
