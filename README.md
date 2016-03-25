@@ -1,7 +1,7 @@
 Neural Networks
 =========
 
-A C++ library for neural networks. This library only works with fully connected feedforward neural networks.
+A C++ library for a simple feedforward neural networks, including backpropagation.
 
 To compile:
 
